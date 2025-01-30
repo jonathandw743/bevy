@@ -1,16 +1,9 @@
 use proc_macro::{TokenStream, TokenTree};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, ToTokens};
-use std::collections::HashSet;
+use std::{any::Any, collections::HashSet};
 use syn::{
-    parenthesized,
-    parse::Parse,
-    parse_macro_input, parse_quote,
-    punctuated::Punctuated,
-    spanned::Spanned,
-    token::{Comma, Paren},
-    Data, DataStruct, DeriveInput, ExprClosure, ExprPath, Fields, Ident, LitStr, Path, Result,
-    Token, Visibility,
+    parenthesized, parse::Parse, parse_macro_input, parse_quote, punctuated::Punctuated, spanned::Spanned, token::{Comma, Paren}, Data, DataStruct, DeriveInput, Expr, ExprClosure, ExprPath, Fields, Ident, LitStr, Path, Result, Token, Visibility
 };
 
 pub fn derive_event(input: TokenStream) -> TokenStream {
@@ -146,7 +139,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
     let mut register_recursive_requires = Vec::with_capacity(attrs.requires.iter().len());
     if let Some(requires) = requires {
         for require in requires {
-            let ident = &require.path;
+            // let ident = &require.path;
             register_recursive_requires.push(quote! {
                 <#ident as #bevy_ecs_path::component::Component>::register_required_components(
                     requiree,
@@ -157,40 +150,51 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
                     recursion_check_stack
                 );
             });
-            match &require.func {
-                Some(RequireFunc::Path(func)) => {
+            match &require {
+                Require::Expr(expr) => {
                     register_required.push(quote! {
                         components.register_required_components_manual::<Self, #ident>(
                             storages,
                             required_components,
-                            || { let x: #ident = #func().into(); x },
+                            || #expr,
                             inheritance_depth,
                             recursion_check_stack
                         );
                     });
                 }
-                Some(RequireFunc::Closure(func)) => {
-                    register_required.push(quote! {
-                        components.register_required_components_manual::<Self, #ident>(
-                            storages,
-                            required_components,
-                            || { let x: #ident = (#func)().into(); x },
-                            inheritance_depth,
-                            recursion_check_stack
-                        );
-                    });
-                }
-                None => {
-                    register_required.push(quote! {
-                        components.register_required_components_manual::<Self, #ident>(
-                            storages,
-                            required_components,
-                            <#ident as Default>::default,
-                            inheritance_depth,
-                            recursion_check_stack
-                        );
-                    });
-                }
+                // Some(RequireFunc::Path(func)) => {
+                //     register_required.push(quote! {
+                //         components.register_required_components_manual::<Self, #ident>(
+                //             storages,
+                //             required_components,
+                //             || { let x: #ident = #func().into(); x },
+                //             inheritance_depth,
+                //             recursion_check_stack
+                //         );
+                //     });
+                // }
+                // Some(RequireFunc::Closure(func)) => {
+                //     register_required.push(quote! {
+                //         components.register_required_components_manual::<Self, #ident>(
+                //             storages,
+                //             required_components,
+                //             || { let x: #ident = (#func)().into(); x },
+                //             inheritance_depth,
+                //             recursion_check_stack
+                //         );
+                //     });
+                // }
+                // None => {
+                //     register_required.push(quote! {
+                //         components.register_required_components_manual::<Self, #ident>(
+                //             storages,
+                //             required_components,
+                //             <#ident as Default>::default,
+                //             inheritance_depth,
+                //             recursion_check_stack
+                //         );
+                //     });
+                // }
             }
         }
     }
@@ -255,7 +259,9 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 pub fn document_required_components(attr: TokenStream, item: TokenStream) -> TokenStream {
     let paths = parse_macro_input!(attr with Punctuated::<Require, Comma>::parse_terminated)
         .iter()
-        .map(|r| format!("[`{}`]", r.path.to_token_stream()))
+        .map(|r| format!("[`{}`]", match r {
+            Require::Expr(expr) => expr.to_token_stream(),
+        }))
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -313,14 +319,8 @@ enum StorageTy {
     SparseSet,
 }
 
-struct Require {
-    path: Path,
-    func: Option<RequireFunc>,
-}
-
-enum RequireFunc {
-    Path(Path),
-    Closure(ExprClosure),
+enum Require {
+    Expr(Expr),
 }
 
 struct Relationship {
@@ -350,7 +350,7 @@ fn parse_component_attr(ast: &DeriveInput) -> Result<Attrs> {
         immutable: false,
     };
 
-    let mut require_paths = HashSet::new();
+    // let mut require_paths = HashSet::new();
     for attr in ast.attrs.iter() {
         if attr.path().is_ident(COMPONENT) {
             attr.parse_nested_meta(|nested| {
@@ -390,14 +390,14 @@ fn parse_component_attr(ast: &DeriveInput) -> Result<Attrs> {
         } else if attr.path().is_ident(REQUIRE) {
             let punctuated =
                 attr.parse_args_with(Punctuated::<Require, Comma>::parse_terminated)?;
-            for require in punctuated.iter() {
-                if !require_paths.insert(require.path.to_token_stream().to_string()) {
-                    return Err(syn::Error::new(
-                        require.path.span(),
-                        "Duplicate required components are not allowed.",
-                    ));
-                }
-            }
+            // for require in punctuated.iter() {
+            //     if !require_paths.insert(require.path.to_token_stream().to_string()) {
+            //         return Err(syn::Error::new(
+            //             require.path.span(),
+            //             "Duplicate required components are not allowed.",
+            //         ));
+            //     }
+            // }
             if let Some(current) = &mut attrs.requires {
                 current.extend(punctuated);
             } else {
@@ -417,20 +417,8 @@ fn parse_component_attr(ast: &DeriveInput) -> Result<Attrs> {
 
 impl Parse for Require {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
-        let path = input.parse::<Path>()?;
-        let func = if input.peek(Paren) {
-            let content;
-            parenthesized!(content in input);
-            if let Ok(func) = content.parse::<ExprClosure>() {
-                Some(RequireFunc::Closure(func))
-            } else {
-                let func = content.parse::<Path>()?;
-                Some(RequireFunc::Path(func))
-            }
-        } else {
-            None
-        };
-        Ok(Require { path, func })
+        let expr = input.parse::<Expr>()?;
+        Ok(Require::Expr(expr))
     }
 }
 
