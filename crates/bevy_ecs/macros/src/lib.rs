@@ -27,6 +27,30 @@ enum BundleFieldKind {
 const BUNDLE_ATTRIBUTE_NAME: &str = "bundle";
 const BUNDLE_ATTRIBUTE_IGNORE_NAME: &str = "ignore";
 
+#[proc_macro_derive(MapEntities)]
+pub fn derive_default(input: TokenStream) -> TokenStream {
+    // Parse the input Rust code (struct/enum)
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = input.ident; // Get struct/enum name
+
+    // Generate implementation of `Default`
+    let expanded = quote! {
+        impl MapEntities for #name {
+            fn default() -> Self {
+                Self {
+                    // Initialize each field using `Default::default()`
+                    // Note: This assumes it's a struct, handling enums requires extra logic
+                    #(
+                        #name: Default::default(),
+                    )*
+                }
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
 #[proc_macro_derive(Bundle, attributes(bundle))]
 pub fn derive_bundle(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
